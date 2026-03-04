@@ -7,7 +7,12 @@ The source code is preserved as Gerbil `.ss` files. At build time, [Gherkin](htt
 ## Quick Start
 
 ```bash
+# Clone and build the Gherkin compiler first
+git clone https://github.com/ober/gherkin ~/mine/gherkin
+cd ~/mine/gherkin && make
+
 # Build standalone binary
+export GHERKIN_DIR=~/mine/gherkin/src
 make build
 
 # Run
@@ -23,7 +28,7 @@ make compat
 ## Requirements
 
 - [Chez Scheme](https://cisco.github.io/ChezScheme/) (installed to `~/.local`)
-- [Gherkin](https://github.com/ober/gherkin) compiler (at `~/mine/gherkin`)
+- [Gherkin](https://github.com/ober/gherkin) compiler
 - gcc, make
 
 ## How It Works

@@ -1,5 +1,6 @@
 SCHEME = $(HOME)/.local/bin/scheme
-GHERKIN = $(HOME)/mine/gherkin/src
+# Clone from https://github.com/ober/gherkin and build, then set GHERKIN_DIR
+GHERKIN = $(or $(GHERKIN_DIR),$(HOME)/mine/gherkin/src)
 LIBDIRS = src:$(GHERKIN)
 COMPILE = LD_LIBRARY_PATH=.:$$LD_LIBRARY_PATH $(SCHEME) -q --libdirs $(LIBDIRS) --compile-imported-libraries
 

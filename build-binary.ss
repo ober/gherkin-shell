@@ -62,7 +62,7 @@
   (display "Error: Cannot find Chez install dir. Set CHEZ_DIR.\n")
   (exit 1))
 
-;; --- Locate gherkin runtime ---
+;; --- Locate gherkin runtime (https://github.com/ober/gherkin) ---
 (define gherkin-dir
   (or (getenv "GHERKIN_DIR")
       (let ((home (getenv "HOME")))
