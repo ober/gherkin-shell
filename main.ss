@@ -137,8 +137,12 @@
   (let ((env (make-shell-environment)))
     (env-init! env)
     ;; Set shell-specific defaults
-    ;; SHELL should point to this shell, not the parent shell
-    (env-set! env "SHELL" (path-normalize (car (command-line))))
+    ;; SHELL should point to this shell, not the parent shell.
+    ;; (command-line) returns /proc/self/fd/N (memfd) in the embedded binary,
+    ;; so gsh-main.c sets GSH_EXE via readlink(/proc/self/exe).
+    (env-set! env "SHELL"
+              (or (getenv "GSH_EXE" #f)
+                  (path-normalize (car (command-line)))))
     (env-set! env "GSH_VERSION" "0.1.0")
     ;; Set default PS1 if not inherited
     (unless (env-get env "PS1")

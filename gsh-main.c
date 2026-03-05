@@ -43,6 +43,17 @@ int main(int argc, char *argv[]) {
         setenv(name, argv[i], 1);
     }
 
+    /* Resolve real executable path for $SHELL (argv[0] may be relative,
+     * and command-line in Scheme returns the memfd /proc/self/fd/N path) */
+    {
+        char exe_buf[4096];
+        ssize_t len = readlink("/proc/self/exe", exe_buf, sizeof(exe_buf) - 1);
+        if (len > 0) {
+            exe_buf[len] = '\0';
+            setenv("GSH_EXE", exe_buf, 1);
+        }
+    }
+
     /* Create memfd for embedded program .so */
     int fd = memfd_create("gsh-program", MFD_CLOEXEC);
     if (fd < 0) {
