@@ -185,12 +185,12 @@
                                                                (glob-pattern? gpat (env-shopt? env "extglob"))
                                                                (not (env-option? env "noglob")))
                                                         (let ((matches (glob-expand gpat
-                                                                         dotglob?: (env-shopt? env "dotglob")
-                                                                         nullglob?: (env-shopt? env "nullglob")
-                                                                         failglob?: (env-shopt? env "failglob")
-                                                                         nocase?: (env-shopt? env "nocaseglob")
-                                                                         extglob?: (env-shopt? env "extglob")
-                                                                         globskipdots?: (env-shopt? env "globskipdots"))))
+                                                                         (env-shopt? env "dotglob")
+                                                                         (env-shopt? env "nullglob")
+                                                                         (env-shopt? env "failglob")
+                                                                         (env-shopt? env "nocaseglob")
+                                                                         (env-shopt? env "extglob")
+                                                                         (env-shopt? env "globskipdots"))))
                                                           ;; If no matches and glob text differs from display text,
                                                           ;; return display text (not the escaped version)
                                                           (if (and (= (length matches) 1)
