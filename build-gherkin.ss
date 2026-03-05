@@ -14,9 +14,18 @@
   (compiler compile))
 
 ;; --- Configuration ---
-;; Source .ss files are in the project root (same directory structure as gerbil-shell)
-(define source-dir ".")
+;; Source .ss files come from the gerbil-shell submodule, with local overrides
+(define submodule-dir "gerbil-shell")
 (define output-dir "src/gsh")
+
+;; Find source file: check local override first, then submodule
+(define (find-source name)
+  (let ((local (string-append "./" name ".ss"))
+        (sub   (string-append submodule-dir "/" name ".ss")))
+    (cond
+      ((file-exists? local) local)
+      ((file-exists? sub)   sub)
+      (else (error 'find-source "source file not found" name)))))
 
 ;; --- Import map: Gerbil module → Chez library ---
 (define gsh-import-map
@@ -307,7 +316,7 @@
 
 ;; --- Module compilation ---
 (define (compile-module name)
-  (let* ((input-path (string-append source-dir "/" name ".ss"))
+  (let* ((input-path (find-source name))
          (output-path (string-append output-dir "/" name ".sls"))
          (lib-name `(gsh ,(string->symbol name))))
     (display (string-append "  Compiling: " name ".ss → " name ".sls\n"))
