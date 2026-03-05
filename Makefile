@@ -3,6 +3,7 @@ SCHEME = $(HOME)/.local/bin/scheme
 GHERKIN = $(or $(GHERKIN_DIR),$(HOME)/mine/gherkin/src)
 LIBDIRS = src:$(GHERKIN)
 COMPILE = LD_LIBRARY_PATH=.:$$LD_LIBRARY_PATH $(SCHEME) -q --libdirs $(LIBDIRS) --compile-imported-libraries
+COMPILE_OPT = LD_LIBRARY_PATH=.:$$LD_LIBRARY_PATH $(SCHEME) -q --libdirs $(LIBDIRS) --compile-imported-libraries --optimize-level 3
 
 .PHONY: all compile gherkin ffi binary clean compat compat-smoke compat-tier0 compat-tier1 compat-tier2 help
 
@@ -17,6 +18,10 @@ libgsh-ffi.so: ffi-shim.c
 gherkin: ffi
 	$(COMPILE) < build-gherkin.ss
 
+# Translate + compile with WPO + opt3 (for binary-opt target)
+gherkin-opt: ffi
+	(echo '#!chezscheme'; echo '(generate-wpo-files #t)(generate-inspector-information #f)(cp0-effort-limit 500)(cp0-score-limit 50)'; tail -n +2 build-gherkin.ss) | $(COMPILE_OPT)
+
 # Step 3: Compile .sls → .so via Chez
 compile: gherkin
 	$(COMPILE) < build-all.ss
@@ -28,43 +33,48 @@ build: binary
 binary: clean ffi gherkin
 	$(SCHEME) -q --libdirs $(LIBDIRS) --program build-binary.ss
 
+# Optimized native binary (opt3 + WPO + tuned cp0)
+binary-opt: clean ffi gherkin-opt
+	$(SCHEME) -q --libdirs $(LIBDIRS) --program build-binary.ss
+
 # Run interpreted
 run: all
 	LD_LIBRARY_PATH=.:$$LD_LIBRARY_PATH $(SCHEME) -q --libdirs $(LIBDIRS) --program gsh.ss
 
-# --- Compatibility tests ---
-_vendor/oils:
-	mkdir -p _vendor
-	git clone --depth 1 https://github.com/oils-for-unix/oils.git _vendor/oils
+# --- Compatibility tests (oils spec files from gerbil-shell submodule) ---
+OILS_DIR = gerbil-shell/_vendor/oils
 
-compat-smoke: _vendor/oils
-	python3 test/run_spec.py _vendor/oils/spec/smoke.test.sh /bin/bash ./gsh
+$(OILS_DIR):
+	$(MAKE) -C gerbil-shell _vendor/oils
 
-compat-tier0: _vendor/oils
+compat-smoke: $(OILS_DIR)
+	python3 test/run_spec.py $(OILS_DIR)/spec/smoke.test.sh /bin/bash ./gsh
+
+compat-tier0: $(OILS_DIR)
 	@echo "=== Tier 0: Core POSIX ==="
 	@for spec in smoke pipeline redirect builtin-eval-source command-sub comments exit-status; do \
 		echo "--- $$spec ---"; \
-		python3 test/run_spec.py _vendor/oils/spec/$$spec.test.sh /bin/bash ./gsh || true; \
+		python3 test/run_spec.py $(OILS_DIR)/spec/$$spec.test.sh /bin/bash ./gsh || true; \
 	done
 
-compat-tier1: _vendor/oils
+compat-tier1: $(OILS_DIR)
 	@echo "=== Tier 1: Variables & Expansion ==="
 	@for spec in here-doc quote word-split var-sub arith tilde assign; do \
 		echo "--- $$spec ---"; \
-		python3 test/run_spec.py _vendor/oils/spec/$$spec.test.sh /bin/bash ./gsh || true; \
+		python3 test/run_spec.py $(OILS_DIR)/spec/$$spec.test.sh /bin/bash ./gsh || true; \
 	done
 
-compat-tier2: _vendor/oils
+compat-tier2: $(OILS_DIR)
 	@echo "=== Tier 2: Advanced ==="
 	@for spec in glob brace-expansion case_ if_ for-expr loop sh-func builtin-special subshell command-parsing; do \
 		echo "--- $$spec ---"; \
-		python3 test/run_spec.py _vendor/oils/spec/$$spec.test.sh /bin/bash ./gsh || true; \
+		python3 test/run_spec.py $(OILS_DIR)/spec/$$spec.test.sh /bin/bash ./gsh || true; \
 	done
 
 compat: compat-tier0 compat-tier1 compat-tier2
 
-compat-one: _vendor/oils
-	python3 test/run_spec.py _vendor/oils/spec/$(SPEC).test.sh /bin/bash ./gsh
+compat-one: $(OILS_DIR)
+	python3 test/run_spec.py $(OILS_DIR)/spec/$(SPEC).test.sh /bin/bash ./gsh
 
 clean:
 	rm -f libgsh-ffi.so ffi-shim.o gsh-main.o gsh-kernel gsh_program.h
