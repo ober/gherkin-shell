@@ -140,7 +140,126 @@
   (and (>= (string-length str) (string-length prefix))
        (string=? (substring str 0 (string-length prefix)) prefix)))
 
-;; Install Gerbil eval handler with ,use / ,exports meta-commands
+;; --- (room) — Common Lisp-style heap/GC introspection ---
+
+(define (format-bytes n)
+  ;; Format byte count as human-readable
+  (cond
+    [(>= n (* 1024 1024 1024))
+     (format "~a GB" (exact->inexact (/ (round (* (/ n (* 1024 1024 1024)) 100)) 100)))]
+    [(>= n (* 1024 1024))
+     (format "~a MB" (exact->inexact (/ (round (* (/ n (* 1024 1024)) 100)) 100)))]
+    [(>= n 1024)
+     (format "~a KB" (exact->inexact (/ (round (* (/ n 1024) 10)) 10)))]
+    [else (format "~a B" n)]))
+
+(define (format-time t)
+  ;; Format a Chez time object as seconds with ms precision
+  (let ((secs (time-second t))
+        (ns (time-nanosecond t)))
+    (format "~a.~3,'0ds" secs (quotient ns 1000000))))
+
+(define (room . args)
+  (let ((verbose? (and (pair? args) (car args)))
+        (port (current-output-port)))
+    ;; Force a GC to get accurate numbers
+    (collect)
+    (let ((stats (statistics))
+          (max-gen (collect-maximum-generation)))
+
+      ;; Header
+      (fprintf port "~n=== Room: Chez Scheme Heap Report ===~n~n")
+
+      ;; Memory overview
+      (fprintf port "--- Memory ---~n")
+      (fprintf port "  Current heap:    ~12a  (~a)~n"
+        (current-memory-bytes) (format-bytes (current-memory-bytes)))
+      (fprintf port "  Maximum heap:    ~12a  (~a)~n"
+        (maximum-memory-bytes) (format-bytes (maximum-memory-bytes)))
+      (fprintf port "  Bytes allocated: ~12a  (~a)~n"
+        (bytes-allocated) (format-bytes (bytes-allocated)))
+
+      ;; GC info
+      (fprintf port "~n--- Garbage Collector ---~n")
+      (fprintf port "  Collections:     ~a~n" (collections))
+      (fprintf port "  GC CPU time:     ~a~n" (format-time (sstats-gc-cpu stats)))
+      (fprintf port "  GC real time:    ~a~n" (format-time (sstats-gc-real stats)))
+      (fprintf port "  GC bytes freed:  ~a  (~a)~n"
+        (sstats-gc-bytes stats) (format-bytes (sstats-gc-bytes stats)))
+      (fprintf port "  Trip bytes:      ~a  (~a)~n"
+        (collect-trip-bytes) (format-bytes (collect-trip-bytes)))
+      (fprintf port "  Max generation:  ~a~n" max-gen)
+      (fprintf port "  Gen radix:       ~a~n" (collect-generation-radix))
+
+      ;; Per-generation breakdown
+      (fprintf port "~n--- Generations ---~n")
+      (do ((g 0 (+ g 1)))
+          ((> g max-gen))
+        (let ((gb (bytes-allocated g)))
+          (fprintf port "  Gen ~a: ~12a  (~a)~n" g gb (format-bytes gb))))
+
+      ;; Process times
+      (fprintf port "~n--- Process ---~n")
+      (fprintf port "  CPU time:        ~a~n" (format-time (sstats-cpu stats)))
+      (fprintf port "  Real time:       ~a~n" (format-time (sstats-real stats)))
+
+      ;; SMP info
+      (let ((cpu-count (let ((c-sysconf (foreign-procedure "sysconf" (int) long)))
+                         (let ((result (c-sysconf 84)))
+                           (if (> result 0) result 1)))))
+        (fprintf port "  CPU cores:       ~a~n" cpu-count))
+
+      ;; Stack
+      (fprintf port "~n--- Stack ---~n")
+      (let ((oc (object-counts)))
+        (for-each (lambda (entry)
+          (when (eq? (car entry) 'stack)
+            (for-each (lambda (gen-info)
+              (fprintf port "  Gen ~a: count=~a  bytes=~a  (~a)~n"
+                (car gen-info) (cadr gen-info) (cddr gen-info)
+                (format-bytes (cddr gen-info))))
+              (cdr entry))))
+          oc))
+
+      ;; Object type breakdown (verbose or top types)
+      (let ((oc (object-counts)))
+        ;; Aggregate per type
+        (let ((summary
+                (filter (lambda (s) (> (caddr s) 0))
+                  (map (lambda (entry)
+                    (let ((type (car entry))
+                          (gens (cdr entry)))
+                      (let loop ((gs gens) (tc 0) (tb 0))
+                        (if (null? gs) (list type tc tb)
+                          (loop (cdr gs) (+ tc (cadr (car gs))) (+ tb (cddr (car gs))))))))
+                    oc))))
+          (let ((sorted (list-sort (lambda (a b) (> (caddr a) (caddr b))) summary)))
+            (if verbose?
+              ;; Full listing
+              (begin
+                (fprintf port "~n--- All Object Types ---~n")
+                (fprintf port "  ~30a ~10a ~12a~n" "Type" "Count" "Bytes")
+                (fprintf port "  ~30a ~10a ~12a~n" "----" "-----" "-----")
+                (for-each (lambda (s)
+                  (fprintf port "  ~30a ~10a ~12a  (~a)~n"
+                    (car s) (cadr s) (caddr s) (format-bytes (caddr s))))
+                  sorted))
+              ;; Top 15 types
+              (begin
+                (fprintf port "~n--- Top Object Types ---~n")
+                (fprintf port "  ~30a ~10a ~12a~n" "Type" "Count" "Bytes")
+                (fprintf port "  ~30a ~10a ~12a~n" "----" "-----" "-----")
+                (let loop ((rest sorted) (n 0))
+                  (when (and (pair? rest) (< n 15))
+                    (let ((s (car rest)))
+                      (fprintf port "  ~30a ~10a ~12a  (~a)~n"
+                        (car s) (cadr s) (caddr s) (format-bytes (caddr s))))
+                    (loop (cdr rest) (+ n 1)))))))))
+
+      (fprintf port "~n")
+      (void))))
+
+;; Install Gerbil eval handler with ,use / ,room / ,exports meta-commands
 (*meta-command-handler*
   (lambda (expr-str)
     (guard (exn
@@ -156,6 +275,14 @@
          (let ((result (handle-use-command
                          (substring expr-str 4 (string-length expr-str)))))
            (cons (format-result result) 0))]
+        ;; ,room — Common Lisp-style heap/GC report
+        [(or (string=? "room" expr-str) (string=? "room " expr-str))
+         (room)
+         (cons "" 0)]
+        ;; ,room #t — verbose report with all object types
+        [(string-prefix? "room " expr-str)
+         (room #t)
+         (cons "" 0)]
         ;; Normal Gerbil eval
         [else
          (let* ((gerbil-forms (gerbil-read-all-from-string expr-str))
