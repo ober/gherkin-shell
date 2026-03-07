@@ -65,8 +65,7 @@
 ;; --- Locate gherkin runtime (https://github.com/ober/gherkin) ---
 (define gherkin-dir
   (or (getenv "GHERKIN_DIR")
-      (let ((home (getenv "HOME")))
-        (format "~a/mine/gherkin/src" home))))
+      (format "~a/gherkin-latest/src" (current-directory))))
 
 (unless (file-exists? (format "~a/compat/types.so" gherkin-dir))
   (printf "Error: Cannot find gherkin runtime at ~a~n" gherkin-dir)
@@ -77,15 +76,21 @@
 (printf "Gherkin dir: ~a~n" gherkin-dir)
 
 ;; --- Step 1: Compile all modules + entry point ---
-(printf "~n[1/7] Compiling all modules...~n")
-(parameterize ([compile-imported-libraries #t])
+(printf "~n[1/7] Compiling all modules (optimize-level 3, tuned cp0, WPO)...~n")
+(parameterize ([compile-imported-libraries #t]
+               [optimize-level 3]
+               [cp0-effort-limit 500]
+               [cp0-score-limit 50]
+               [generate-inspector-information #f]
+               [generate-wpo-files #t])
   (compile-program "gsh.ss"))
 
-;; --- Step 2: Bundle program .so ---
-;; No WPO — the auto-generated code uses identifier-syntax for mutable exports
-;; which WPO eliminates as dead code. Use gsh.so directly.
-(printf "[2/7] Using compiled program...~n")
-(system "cp gsh.so gsh-all.so")
+;; --- Step 2: Whole-program optimization ---
+(printf "[2/7] Running whole-program optimization...~n")
+(let ((missing (compile-whole-program "gsh.wpo" "gsh-all.so")))
+  (unless (null? missing)
+    (printf "  WPO: ~a libraries not incorporated (missing .wpo):~n" (length missing))
+    (for-each (lambda (lib) (printf "    ~a~n" lib)) missing)))
 
 ;; --- Step 3: Make libs-only boot file ---
 ;; NOTE: The program is NOT included in the boot file. Programs in boot files
@@ -98,12 +103,14 @@
     (list
       (format "~a/compat/types.so" gherkin-dir)
       (format "~a/compat/gambit-compat.so" gherkin-dir)
+      (format "~a/compat/threading.so" gherkin-dir)
       (format "~a/runtime/util.so" gherkin-dir)
       (format "~a/runtime/table.so" gherkin-dir)
       (format "~a/runtime/c3.so" gherkin-dir)
       (format "~a/runtime/mop.so" gherkin-dir)
       (format "~a/runtime/error.so" gherkin-dir)
       (format "~a/runtime/hash.so" gherkin-dir)
+      (format "~a/runtime/control.so" gherkin-dir)
       ;; Gherkin compiler (for Gerbil eval)
       (format "~a/runtime/syntax.so" gherkin-dir)
       (format "~a/runtime/eval.so" gherkin-dir)

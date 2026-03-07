@@ -62,40 +62,22 @@
                  (flvector-set! v 0 (/ (cpu-time) 1000.0))
                  (flvector-set! v 2 (/ (real-time) 1000.0))
                  v)) env)
-      ;; Gambit threading shims (Chez uses fork-thread + mutex/condition)
-      ;; Thread object: #(thunk mtx cnd result done?)
-      (eval '(define (make-thread thunk)
-               (vector thunk (make-mutex) (make-condition) #f #f)) env)
-      (eval '(define (thread-start! thr)
-               (let ((thunk (vector-ref thr 0))
-                     (mtx   (vector-ref thr 1))
-                     (cnd   (vector-ref thr 2)))
-                 (fork-thread
-                   (lambda ()
-                     (let ((v (thunk)))
-                       (mutex-acquire mtx)
-                       (vector-set! thr 3 v)
-                       (vector-set! thr 4 #t)
-                       (condition-broadcast cnd)
-                       (mutex-release mtx))))
-                 thr)) env)
-      (eval '(define (thread-join! thr)
-               (let ((mtx (vector-ref thr 1))
-                     (cnd (vector-ref thr 2)))
-                 (mutex-acquire mtx)
-                 (let lp ()
-                   (if (vector-ref thr 4)
-                     (let ((r (vector-ref thr 3)))
-                       (mutex-release mtx) r)
-                     (begin (condition-wait cnd mtx) (lp)))))) env)
-      (eval '(define (thread-sleep! secs)
-               (sleep (make-time 'time-duration
-                        (exact (round (* (- secs (floor secs)) 1000000000)))
-                        (exact (floor secs))))) env)
-      ;; Gambit SMP primitives — no-ops on Chez (threads are always OS-level)
+      ;; Gambit threading shims — import from (compat threading) for proper
+      ;; SRFI-18 threads with lock-free current-thread and mailboxes
+      (eval '(import (only (compat threading)
+               make-thread thread-start! thread-join!
+               thread-yield! thread-sleep!
+               current-thread thread-name thread?
+               thread-send thread-receive)) env)
+      ;; Gambit SMP primitives — Chez has real SMP with pthreads
       (eval `(define (,(string->symbol "##set-parallelism-level!") n) (void)) env)
       (eval `(define (,(string->symbol "##startup-parallelism!")) (void)) env)
-      (eval `(define (,(string->symbol "##current-vm-processor-count")) 8) env)
+      ;; Report real CPU count for SMP-aware code
+      (eval `(define ,(string->symbol "##current-vm-processor-count")
+               (let ((count ,(let ((c-sysconf (foreign-procedure "sysconf" (int) long)))
+                               (let ((result (c-sysconf 84)))
+                                 (if (> result 0) result 1)))))
+                 (lambda () count))) env)
       ;; Gambit I/O shims
       (eval '(define (force-output . args)
                (flush-output-port

@@ -26,10 +26,12 @@
     gambit-current-time time->seconds current-second
     random-integer
     let/cc
-    ;; Threading
-    spawn thread-join! thread-sleep! thread-yield!
+    ;; Threading (full SRFI-18 via (compat threading))
+    spawn make-thread thread-start! thread-join! thread-sleep! thread-yield!
+    current-thread thread-name thread? thread-specific thread-specific-set!
     make-mutex mutex-lock! mutex-unlock!
-    make-condition-variable condition-variable-signal!
+    make-condition-variable condition-variable-signal! condition-variable-broadcast!
+    thread-send thread-receive
     ;; Process
     open-process process-status process-pid close-port
     ;; Box type (excluded from chezscheme, provide Gambit-compatible box)
@@ -71,7 +73,17 @@
             (open-output-file chez:open-output-file)
             (open-input-file chez:open-input-file))
             ;; Exclude Chez's box type — we provide Gambit-compatible box
-            box box? unbox set-box!))
+            box box? unbox set-box!
+            ;; Exclude names that come from (compat threading)
+            thread?)
+         ;; Import gherkin-latest's full SRFI-18 threading with lock-free current-thread
+         (only (compat threading)
+            make-thread thread-start! thread-join!
+            thread-yield! thread-sleep!
+            current-thread thread-name thread?
+            thread-specific thread-specific-set!
+            condition-variable-signal! condition-variable-broadcast!
+            thread-send thread-receive))
 
   ;; Make FFI symbols visible via dlopen(NULL).
   ;; Symbols come from the binary itself (static link) or LD_LIBRARY_PATH (.so).
@@ -356,65 +368,36 @@
       (thunk)))
 
   ;; --- Threading ---
-  ;; Map Gambit thread API to Chez threads
+  ;; Full SRFI-18 threading via (compat threading) from gherkin-latest.
+  ;; Uses lock-free thread-local current-thread (make-thread-parameter),
+  ;; proper make-thread/thread-start!/thread-join! with exception propagation,
+  ;; and thread mailboxes for message passing.
 
-  ;; Joinable thread wrapper using condition variables.
-  ;; spawn returns a vector: #(thread mutex condvar done-box)
-  ;; thread-join! waits on the condvar until the thread signals completion.
+  ;; spawn = thread-start! (make-thread thunk) — Gerbil's spawn idiom
   (define (spawn thunk)
-    (let* ([m (make-mutex)]
-           [cv (make-condition)]
-           [done (box #f)])
-      (let ([t (fork-thread
-                 (lambda ()
-                   (guard (e [#t (void)])
-                     (thunk))
-                   (with-mutex m
-                     (set-box! done #t)
-                     (condition-signal cv))))])
-        (vector t m cv done))))
+    (thread-start! (make-thread thunk)))
 
-  (define (thread-join! th)
-    (cond
-      [(vector? th)
-       (let ([m (vector-ref th 1)]
-             [cv (vector-ref th 2)]
-             [done (vector-ref th 3)])
-         (with-mutex m
-           (let loop ()
-             (unless (unbox done)
-               (condition-wait cv m)
-               (loop)))))]
-      [else (void)]))
-
-  (define (thread-sleep! seconds)
-    (let ((ns (inexact->exact (round (* seconds 1000000000)))))
-      (sleep (make-time 'time-duration ns 0))))
-
-  (define (thread-yield!)
-    (sleep (make-time 'time-duration 0 0)))
-
-  ;; Map Gambit thread API to Chez
+  ;; make-mutex: Gambit-compatible, returns a Chez native mutex.
+  ;; We use Chez native mutexes (not gerbil-mutex wrappers) because compiled
+  ;; gsh code may exclude make-mutex from (compat gambit) and fall through to
+  ;; (chezscheme)'s make-mutex. mutex-lock!/mutex-unlock! must handle both.
   (define (make-mutex . name)
-    ;; Gambit: (make-mutex) or (make-mutex name) — name can be string
-    ;; Chez: (make-mutex) or (make-mutex symbol) — requires symbol
     (if (pair? name)
       (let ([n (car name)])
         (chez:make-mutex (if (string? n) (string->symbol n) n)))
       (chez:make-mutex)))
 
+  ;; Override mutex-lock!/mutex-unlock! to handle both Chez native mutexes
+  ;; and gerbil-mutex wrappers from (compat threading).
   (define (mutex-lock! mtx)
     (mutex-acquire mtx))
 
   (define (mutex-unlock! mtx . args)
-    ;; Gambit: (mutex-unlock! mtx) or (mutex-unlock! mtx condvar timeout)
     (mutex-release mtx)
-    ;; If condvar passed, signal it
     (when (pair? args)
       (condition-signal (car args))))
 
   (define make-condition-variable make-condition)
-  (define condition-variable-signal! condition-signal)
 
   ;; --- Process ---
   ;; Port→PID tracking for open-process / process-status
@@ -632,13 +615,20 @@
            (chez:open-input-file path)))]
       [else (error 'open-input-file "invalid argument" path-or-settings)]))
 
-  ;; --- Gambit SMP internals (no-ops on Chez) ---
+  ;; --- Gambit SMP internals ---
+  ;; Chez Scheme has true SMP with pthreads — all fork-thread calls create
+  ;; real OS threads. set-parallelism-level! and startup-parallelism! are
+  ;; Gambit-specific concepts; on Chez, threads are always parallel.
   (define (\x23;\x23;set-parallelism-level! n) (void))
   (define (\x23;\x23;startup-parallelism!) (void))
-  (define (\x23;\x23;cpu-count)
-    ;; Return number of CPU cores via sysconf
-    (let ((n (foreign-procedure "sysconf" (int) long)))
-      (let ((result (n 84))) ;; _SC_NPROCESSORS_ONLN = 84 on Linux
-        (if (> result 0) result 1))))
+
+  ;; Cache CPU count at load time (reading /proc is cheap but no need to repeat)
+  (define *cpu-count*
+    (guard (exn [#t 1])
+      (let ((c-sysconf (foreign-procedure "sysconf" (int) long)))
+        (let ((result (c-sysconf 84))) ;; _SC_NPROCESSORS_ONLN = 84 on Linux
+          (if (> result 0) result 1)))))
+
+  (define (\x23;\x23;cpu-count) *cpu-count*)
 
   ) ;; end library
